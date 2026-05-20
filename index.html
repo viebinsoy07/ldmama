@@ -23,11 +23,13 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <style>
     body { background: #E6F7F2; font-family: 'Plus Jakarta Sans', sans-serif; }
-  .card { background: white; border-radius: 28px; box-shadow: 0 10px 30px rgba(74,144,226,0.08); }
-  .tap { -webkit-tap-highlight-color: transparent; }
+   .card { background: white; border-radius: 28px; box-shadow: 0 10px 30px rgba(74,144,226,0.08); }
+   .tap { -webkit-tap-highlight-color: transparent; }
     #scannerVideo { border-radius: 24px; overflow: hidden; }
     #scannerVideo video, #customerScannerVideo video { width: 100%!important; border-radius: 24px; }
     #scannerVideo, #customerScannerVideo { border-radius: 24px; overflow: hidden; }
+    @keyframes pop {0%{transform:scale(.8)}50%{transform:scale(1.15)}100%{transform:scale(1)}}
+    #stampsGrid .bg-mama { animation: pop .3s ease; }
   </style>
 </head>
 <body class="min-h-screen text-gray-800 antialiased">
@@ -116,6 +118,7 @@
           <div>
             <p class="text-xs text-gray-500">Logged in as</p>
             <p id="staffEmailShow" class="font-bold"></p>
+            <p class="text-xs text-gray-500 mt-1"><span id="totalCust">0</span> sukis • <span id="todayRedemptions">0</span> redeemed today</p>
           </div>
           <button onclick="staffLogout()" class="tap px-4 py-2 rounded-xl bg-red-500 text-white font-semibold text-sm">Logout</button>
         </div>
@@ -227,13 +230,29 @@ window.checkCustomer = async () => {
   const grid = document.getElementById('stampsGrid'); grid.innerHTML='';
   for(let i=0;i<15;i++){
     const dot = document.createElement('div');
-    dot.className = 'aspect-square rounded-2xl flex items-center justify-center font-bold text-sm ' + (i < (customer.loads||0)? 'bg-mama text-white' : 'bg-gray-100 text-gray-400');
-    dot.textContent = i < (customer.loads||0)? '✓' : (i+1);
+    dot.className = 'aspect-square rounded-2xl flex items-center justify-center font-bold text-sm ' + (i < (customer.loads||0) ? 'bg-mama text-white' : 'bg-gray-100 text-gray-400');
+    dot.textContent = i < (customer.loads||0) ? '✓' : (i+1);
     grid.appendChild(dot);
   }
   document.getElementById('customerCard').classList.remove('hidden');
-  window.currentCustomer = customer;
 };
+
+function showCustomer(c){
+  document.getElementById('customerCard').classList.remove('hidden');
+  document.getElementById('custName').textContent = c.name;
+  document.getElementById('custLoads').textContent = c.loads || 0;
+  document.getElementById('progressBar').style.width = `${((c.loads||0)/15)*100}%`;
+  const grid = document.getElementById('stampsGrid');
+  grid.innerHTML = '';
+  for(let i=1;i<=15;i++){
+    const earned = i <= (c.loads||0);
+    const div = document.createElement('div');
+    div.className = `aspect-square rounded-full flex items-center justify-center font-bold transition ${earned? 'bg-gradient-to-br from-mama to-sky-400 text-white shadow-lg shadow-mama/20' : 'border-2 border-dashed border-gray-300 text-gray-400'}`;
+    div.innerHTML = earned? '✓' : i;
+    grid.appendChild(div);
+  }
+  window.currentCustomer = c;
+}
 
 window.showMyQR = () => {
   if(!window.currentCustomer) return;
@@ -268,6 +287,7 @@ window.staffLogout = async () => {
   stopScanner();
 };
 
+
 // Customer QR check
 window.startCustomerScan = async () => {
   document.getElementById('customerScannerWrap').classList.remove('hidden');
@@ -295,26 +315,44 @@ async function checkCustomerByCode(code){
 
 window.handleCustomerUpload = async (input) => {
   if(!input.files.length) return;
+  // stop camera if open
+  const wasScanning = customerQr && customerQr.isScanning;
+  if(wasScanning){ try{ await customerQr.stop(); }catch(e){} }
   try{
-    if(!customerQr) customerQr = new Html5Qrcode('customerScannerVideo');
-    const txt = await customerQr.scanFile(input.files[0], true);
+    // use a temporary scanner for file
+    const tempId = 'tempFileScanner';
+    let tempDiv = document.getElementById(tempId);
+    if(!tempDiv){ tempDiv = document.createElement('div'); tempDiv.id = tempId; tempDiv.style.display='none'; document.body.appendChild(tempDiv); }
+    const fileScanner = new Html5Qrcode(tempId);
+    const txt = await fileScanner.scanFile(input.files[0], true);
+    await fileScanner.clear();
     checkCustomerByCode(txt);
   }catch(e){ toast('Cannot read QR from image', true); }
   input.value = '';
+  // restart camera if it was open
+  if(wasScanning){ startCustomerScan(); }
 };
 
 window.handleStaffUpload = async (input) => {
   if(!input.files.length) return;
+  const wasScanning = html5Qr && html5Qr.isScanning;
+  if(wasScanning){ try{ await html5Qr.stop(); }catch(e){} }
   try{
-    if(!html5Qr) html5Qr = new Html5Qrcode('scannerVideo');
-    const txt = await html5Qr.scanFile(input.files[0], true);
-    stopScanner();
+    const tempId = 'tempStaffScanner';
+    let tempDiv = document.getElementById(tempId);
+    if(!tempDiv){ tempDiv = document.createElement('div'); tempDiv.id = tempId; tempDiv.style.display='none'; document.body.appendChild(tempDiv); }
+    const fileScanner = new Html5Qrcode(tempId);
+    const txt = await fileScanner.scanFile(input.files[0], true);
+    await fileScanner.clear();
+    document.getElementById('scannerWrap').classList.add('hidden');
     handleScan(txt);
   }catch(e){ toast('Cannot read QR from image', true); }
   input.value = '';
+  if(wasScanning){ startScanner(scanMode); }
 };
 
 // Scanner
+
 window.startScanner = async (mode) => {
   if(!currentUser){ toast('Login first', true); return; }
   scanMode = mode;
@@ -335,15 +373,17 @@ window.stopScanner = () => {
 
 async function handleScan(code){
   const { data:customer, error:findErr } = await supabase.from('customers').select('*').eq('qr_code', code).maybeSingle();
-  if(findErr ||!customer){ toast('QR not found', true); return; }
+  if(findErr || !customer){ toast('QR not found', true); return; }
   if(scanMode==='add'){
     const newLoads = Math.min(15, (customer.loads||0)+1);
     const { error } = await supabase.from('customers').update({ loads: newLoads }).eq('id', customer.id);
     if(error){ toast('Add failed: '+error.message, true); return; }
     await supabase.from('load_history').insert({ customer_id: customer.id, loads: 1, type: 'add', note: 'Scan add', staff_email: currentUser?.email });
     toast(`${customer.name} +1 stamp`);
+    new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play().catch(()=>{});
   } else {
     if((customer.loads||0) < 15){ toast('Not enough stamps', true); return; }
+    if(!confirm(`Redeem FREE wash for ${customer.name}?`)) return;
     const newLoads = (customer.loads||0) - 15;
     const { error } = await supabase.from('customers').update({ loads: newLoads }).eq('id', customer.id);
     if(error){ toast('Redeem failed: '+error.message, true); return; }
@@ -360,7 +400,7 @@ window.manualAdd = async () => {
   if(!currentUser){ toast('Login first', true); return; }
   if(phone.length<10){ toast('Enter phone', true); return; }
   const { data:customer, error:findErr } = await supabase.from('customers').select('*').eq('phone', phone).maybeSingle();
-  if(findErr ||!customer){ toast('Customer not found', true); return; }
+  if(findErr || !customer){ toast('Customer not found', true); return; }
   const newLoads = Math.min(15, (customer.loads||0)+1);
   const { error } = await supabase.from('customers').update({ loads: newLoads }).eq('id', customer.id);
   if(error){ toast('Add failed: '+error.message, true); return; }
@@ -375,6 +415,7 @@ window.registerCustomer = async () => {
   const name = document.getElementById('newName').value.trim();
   const phone = document.getElementById('newPhone').value.replace(/\D/g,'');
   if(!name || phone.length<10){ toast('Enter name & phone', true); return; }
+  // check duplicate
   const { data:exists } = await supabase.from('customers').select('id').eq('phone', phone).maybeSingle();
   if(exists){ toast('Phone already registered', true); return; }
   const code = 'LM-' + Math.random().toString(36).substring(2,8).toUpperCase();
@@ -391,19 +432,25 @@ window.loadCustomerList = async () => {
   const q = (document.getElementById('searchCust').value||'').toLowerCase();
   const { data, error } = await supabase.from('customers').select('*').order('name');
   if(error){ toast('Load failed: '+error.message, true); return; }
+  document.getElementById('totalCust').textContent = data.length;
+  // today redemptions
+  const today = new Date().toISOString().slice(0,10);
+  supabase.from('load_history').select('*',{count:'exact',head:true}).eq('type','redeem').gte('created_at', today).then(({count})=>{ document.getElementById('todayRedemptions').textContent = count||0; });
   const list = document.getElementById('custList');
   list.innerHTML = '';
   (data||[]).filter(c=>!q || c.name.toLowerCase().includes(q) || c.phone.includes(q)).forEach(c=>{
     const row = document.createElement('div');
     row.className = 'flex items-center justify-between p-3 rounded-2xl hover:bg-gray-50 cursor-pointer border border-gray-100';
     row.innerHTML = `
-      <div class="flex items-center gap-3" onclick="showCustQR('${c.id}')">
+      <div class="flex items-center gap-3" onclick="openCustomerDetail('${c.id}')">
         <div class="w-10 h-10 rounded-xl bg-mama/10 flex items-center justify-center font-bold text-mama">${(c.name||'?').charAt(0).toUpperCase()}</div>
         <div>
           <p class="font-semibold leading-tight">${c.name}</p>
           <p class="text-xs text-gray-500">${c.phone} • ${c.loads||0} stamps</p>
         </div>
+      </div>
       <div class="flex gap-1.5">
+        <button onclick="event.stopPropagation();quickAdd('${c.id}')" class="px-3 py-1.5 rounded-lg bg-mama/10 text-mama text-xs font-semibold">+1</button>
         <button onclick="event.stopPropagation();openEdit('${c.id}')" class="px-3 py-1.5 rounded-lg bg-gray-100 text-xs font-semibold">Edit</button>
         <button onclick="event.stopPropagation();delCust('${c.id}')" class="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs font-semibold">Del</button>
       </div>`;
@@ -411,9 +458,10 @@ window.loadCustomerList = async () => {
   });
 };
 
+
 window.openEdit = async (id) => {
   const { data:c, error } = await supabase.from('customers').select('*').eq('id', id).maybeSingle();
-  if(error ||!c){ toast('Cannot load', true); return; }
+  if(error || !c){ toast('Cannot load', true); return; }
   document.getElementById('editId').value = c.id;
   document.getElementById('editName').value = c.name;
   document.getElementById('editPhone').value = c.phone;
@@ -438,13 +486,73 @@ window.saveEdit = async () => {
   closeEditModal();
   toast('Updated ✓');
   loadCustomerList();
+  // refresh customer view if open
   const currentPhone = document.getElementById('phoneInput').value.replace(/\D/g,'');
   if(currentPhone === phone) checkCustomer();
 };
 
+
+window.openCustomerDetail = async (id) => {
+  const { data:c, error } = await supabase.from('customers').select('*').eq('id', id).maybeSingle();
+  if(error || !c){ toast('Not found', true); return; }
+  document.getElementById('detailId').value = c.id;
+  document.getElementById('detailName').textContent = c.name;
+  document.getElementById('detailPhone').textContent = c.phone;
+  document.getElementById('detailLoads').textContent = c.loads||0;
+  document.getElementById('detailProgress').style.width = ((c.loads||0)/15*100)+'%';
+  document.getElementById('customerDetailModal').classList.remove('hidden');
+  document.getElementById('customerDetailModal').classList.add('flex');
+};
+
+window.closeCustomerDetail = () => {
+  document.getElementById('customerDetailModal').classList.add('hidden');
+  document.getElementById('customerDetailModal').classList.remove('flex');
+};
+
+window.addPointFromDetail = async () => {
+  const id = document.getElementById('detailId').value;
+  const { data:c } = await supabase.from('customers').select('*').eq('id', id).maybeSingle();
+  if(!c) return;
+  const newLoads = Math.min(15, (c.loads||0)+1);
+  const { error } = await supabase.from('customers').update({loads:newLoads}).eq('id', id);
+  if(error){ toast('Failed: '+error.message, true); return; }
+  await supabase.from('load_history').insert({customer_id:id, loads:1, type:'add', note:'Detail +1', staff_email: currentUser?.email});
+  toast(`${c.name} +1`);
+  new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play().catch(()=>{});
+  closeCustomerDetail();
+  loadCustomerList();
+};
+
+window.redeemFromDetail = async () => {
+  const id = document.getElementById('detailId').value;
+  const { data:c } = await supabase.from('customers').select('*').eq('id', id).maybeSingle();
+  if(!c) return;
+  if((c.loads||0) < 15){ toast('Not enough stamps', true); return; }
+  if(!confirm(`Redeem FREE wash for ${c.name}?`)) return;
+  const newLoads = (c.loads||0)-15;
+  const { error } = await supabase.from('customers').update({loads:newLoads}).eq('id', id);
+  if(error){ toast('Failed: '+error.message, true); return; }
+  await supabase.from('load_history').insert({customer_id:id, loads:15, type:'redeem', note:'Detail redeem', staff_email: currentUser?.email});
+  toast(`${c.name} redeemed!`);
+  closeCustomerDetail();
+  loadCustomerList();
+};
+
+window.showQRFromDetail = async () => {
+  const id = document.getElementById('detailId').value;
+  closeCustomerDetail();
+  showCustQR(id);
+};
+
+window.openEditFromDetail = async () => {
+  const id = document.getElementById('detailId').value;
+  closeCustomerDetail();
+  openEdit(id);
+};
+
 window.showCustQR = async (id) => {
   const { data:c, error } = await supabase.from('customers').select('*').eq('id', id).maybeSingle();
-  if(error ||!c){ toast('Customer not found', true); return; }
+  if(error || !c){ toast('Customer not found', true); return; }
   document.getElementById('qrName').textContent = c.name;
   document.getElementById('qrCodeText').textContent = c.qr_code;
   document.getElementById('qrcode').innerHTML = '';
@@ -456,7 +564,7 @@ window.showCustQR = async (id) => {
 window.delCust = async (id) => {
   if(!confirm('Delete this customer permanently? This cannot be undone.')) return;
   const { error:histErr } = await supabase.from('load_history').delete().eq('customer_id', id);
-  if(histErr &&!histErr.message.includes('0 rows')){ console.warn(histErr); }
+  if(histErr && !histErr.message.includes('0 rows')){ console.warn(histErr); }
   const { error } = await supabase.from('customers').delete().eq('id', id);
   if(error){ toast('Delete failed: '+error.message, true); console.error(error); return; }
   toast('Deleted ✓'); loadCustomerList();
@@ -472,6 +580,10 @@ supabase.auth.getSession().then(({data})=>{
     loadCustomerList();
   }
 });
+// restore last phone
+const lastPhone = localStorage.getItem('lastPhone');
+if(lastPhone){ document.getElementById('phoneInput').value = lastPhone; }
+
 </script>
 
   <!-- Edit Customer Modal -->
@@ -489,6 +601,34 @@ supabase.auth.getSession().then(({data})=>{
         <button onclick="closeEditModal()" class="tap py-3 rounded-2xl bg-gray-100 font-bold">Cancel</button>
         <button onclick="saveEdit()" class="tap py-3 rounded-2xl bg-mama text-white font-bold">Save</button>
       </div>
+    </div>
+  </div>
+
+
+  <!-- Customer Detail Modal -->
+  <div id="customerDetailModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center p-6 z-50" onclick="closeCustomerDetail()">
+    <div class="card p-6 w-full max-w-[360px]" onclick="event.stopPropagation()">
+      <div class="flex items-start justify-between mb-4">
+        <div>
+          <h3 id="detailName" class="font-extrabold text-xl">—</h3>
+          <p id="detailPhone" class="text-sm text-gray-500">—</p>
+        </div>
+        <div class="text-right">
+          <p class="text-xs text-gray-500 uppercase">Stamps</p>
+          <p class="text-2xl font-extrabold text-mama"><span id="detailLoads">0</span><span class="text-gray-400 text-lg">/15</span></p>
+        </div>
+      </div>
+      <div class="h-2 w-full bg-gray-100 rounded-full overflow-hidden mb-4">
+        <div id="detailProgress" class="h-full w-0 bg-gradient-to-r from-mama to-sky-400 transition-all"></div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button onclick="addPointFromDetail()" class="tap py-3 rounded-2xl bg-mama text-white font-bold">+1 Stamp</button>
+        <button onclick="redeemFromDetail()" class="tap py-3 rounded-2xl bg-green-500 text-white font-bold">Redeem</button>
+        <button onclick="showQRFromDetail()" class="tap py-2.5 rounded-xl border-2 border-mama text-mama font-semibold">Show QR</button>
+        <button onclick="openEditFromDetail()" class="tap py-2.5 rounded-xl bg-gray-100 font-semibold">Edit</button>
+      </div>
+      <button onclick="closeCustomerDetail()" class="tap mt-3 w-full py-2.5 rounded-xl bg-gray-900 text-white font-semibold">Close</button>
+      <input type="hidden" id="detailId">
     </div>
   </div>
 
